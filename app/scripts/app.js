@@ -1,3 +1,5 @@
+/*global angular*/
+
 'use strict';
 
 angular.module('errorApp', []);
@@ -8,50 +10,50 @@ angular.module('webwalletApp', [
   'ui.bootstrap',
   'ja.qr'
 ])
-  .config(function ($routeProvider) {
-    $routeProvider
-      .when('/', {
-        templateUrl: 'views/main.html'
-      })
-      .when('/import', {
-        templateUrl: 'views/import.html'
-      })
-      .when('/device/:deviceId', {
-        templateUrl: 'views/device/index.html'
-      })
-      .when('/device/:deviceId/load', {
-        templateUrl: 'views/device/load.html'
-      })
-      .when('/device/:deviceId/recovery', {
-        templateUrl: 'views/device/recovery.html'
-      })
-      .when('/device/:deviceId/wipe', {
-        templateUrl: 'views/device/wipe.html'
-      })
-      .when('/device/:deviceId/account/:accountId', {
-        templateUrl: 'views/account/index.html'
-      })
-      .when('/device/:deviceId/account/:accountId/send', {
-        templateUrl: 'views/account/send.html'
-      })
-      .when('/device/:deviceId/account/:accountId/send/:output', {
-        templateUrl: 'views/account/send.html'
-      })
-      .when('/device/:deviceId/account/:accountId/send/:output/amount/:amount', {
-        templateUrl: 'views/account/send.html'
-      })
-      .when('/device/:deviceId/account/:accountId/receive', {
-        templateUrl: 'views/account/receive.html'
-      })
-      .when('/send/:uri', {
-        resolve: {
-          uriRedirect: 'uriRedirect'
-        }
-      })
-      .otherwise({
-        redirectTo: '/'
-      });
-  });
+.config(function ($routeProvider) {
+  $routeProvider
+    .when('/', {
+      templateUrl: 'views/main.html'
+    })
+    .when('/import', {
+      templateUrl: 'views/import.html'
+    })
+    .when('/device/:deviceId', {
+      templateUrl: 'views/device/index.html'
+    })
+    .when('/device/:deviceId/load', {
+      templateUrl: 'views/device/load.html'
+    })
+    .when('/device/:deviceId/recovery', {
+      templateUrl: 'views/device/recovery.html'
+    })
+    .when('/device/:deviceId/wipe', {
+      templateUrl: 'views/device/wipe.html'
+    })
+    .when('/device/:deviceId/account/:accountId', {
+      templateUrl: 'views/account/index.html'
+    })
+    .when('/device/:deviceId/account/:accountId/send', {
+      templateUrl: 'views/account/send.html'
+    })
+    .when('/device/:deviceId/account/:accountId/send/:output', {
+      templateUrl: 'views/account/send.html'
+    })
+    .when('/device/:deviceId/account/:accountId/send/:output/amount/:amount', {
+      templateUrl: 'views/account/send.html'
+    })
+    .when('/device/:deviceId/account/:accountId/receive', {
+      templateUrl: 'views/account/receive.html'
+    })
+    .when('/send/:uri', {
+      resolve: {
+        uriRedirect: 'uriRedirect'
+      }
+    })
+    .otherwise({
+      redirectTo: '/'
+    });
+});
 
 // load trezor plugin and bootstrap application
 angular.element(document).ready(function () {

@@ -20,6 +20,21 @@ angular.module('webwalletApp')
       this._DEFAULT_LABEL = 'My TREZOR';
     }
 
+    /**
+     * Initialize the device -- subscribe to account updates from the
+     * server backend.
+     */
+    TrezorDevice.prototype.init = TrezorDevice.prototype.subscribe;
+
+    /**
+     * Disconnect the device and unsubscribe from account updates from the
+     * server backend.
+     */
+    TrezorDevice.prototype.destroy = function () {
+        this.disconnect();
+        this.unsubscribe();
+    };
+
     TrezorDevice.deserialize = function (data) {
       var dev = new TrezorDevice(data.id);
 
