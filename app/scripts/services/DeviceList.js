@@ -1,6 +1,7 @@
-/*global angular, utils, _*/
+/*global _, $q, config, utils, trezor, TrezorDevice, DeviceStorage, $rootScope*/
 
-(function (angular, utils, _) {
+(function (_, $q, config, utils, trezor, TrezorDevice, DeviceStorage,
+        $rootScope) {
     'use strict';
 
     /**
@@ -10,7 +11,7 @@
         // Initialize the device storage
         this._storage = new DeviceStorage({
             type: TrezorDevice,
-            version: config.storageVersion
+            version: config.storageVersion,
             keyItems: this.STORAGE_DEVICES,
             keyVersion: this.STORAGE_VERSION
         });
@@ -27,27 +28,46 @@
         this._watch(this.POLLING_PERIOD);
     }
 
-    DeviceList.prototype.STORAGE_DEVICES = 'trezorServiceDeviceList',
+    DeviceList.prototype.EVENT_CONNECT = 'device.connect';
+    DeviceList.prototype.EVENT_DISCONNECT = 'device.disconnect';
+
+    DeviceList.prototype.STORAGE_DEVICES = 'trezorServiceDeviceList';
     DeviceList.prototype.STORAGE_VERSION = 'trezorStorageVersion';
     DeviceList.prototype.POLLING_PERIOD = 1000;
 
     DeviceList.prototype._devices = null;
 
-    DeviceList.prototype._enumeratePaused = false;
-    DeviceList.prototype._connectFn = connect;
-    DeviceList.prototype._disconnectFn = disconnect;
+    DeviceList.prototype._watchPaused = false;
 
     DeviceList.prototype._forgetInProgress = false;
     DeviceList.prototype._forgetModal = false;
 
+    DeviceList.prototype._connectHook = false;
+    DeviceList.prototype._initHook = false;
+    DeviceList.prototype._disconnectHook = false;
+
     /**
-     * Find a device by its ID
+     * Find a device by passed device ID or device descriptor
      *
-     * @param {String} id  Device ID
-     * @return {TrezorDevice}  Device
+     * @param {String|Object} id         Device ID or descriptor in format
+     *                                   {id: String, path: String}
+     * @return {TrezorDevice|undefined}  Device or undefined if not found
      */
     DeviceList.prototype.get = function (id) {
-        return _.find(self.devices, { id: id });
+        id = id.id || id;
+        if (!id) {
+            return;
+        }
+        return _.find(this._devices, { id: id });
+    };
+
+    /**
+     * Add a new device to the device list
+     *
+     * @param {TrezorDevice} dev  Device to add
+     */
+    DeviceList.prototype._add = function (dev) {
+        this._devices.push(dev);
     };
 
     /**
@@ -58,7 +78,7 @@
      * @return {TrezorDevice}  Default device
      */
     DeviceList.prototype.getDefault = function () {
-        return self.devices[0];
+        return this._devices[0];
     };
 
     /**
@@ -73,10 +93,17 @@
      *
      * @param {TrezorDevice} dev  Device to remove
      */
-    DeviceList.prototype.forget = function (dev) {
+    DeviceList.prototype.remove = function (dev) {
         dev.destroy();
-        _.remove(self.devices, { id: dev.id });
+        _.remove(this._devices, { id: dev.id });
     };
+
+    /**
+     * Alias to `DeviceList#remove()`
+     *
+     * @see DeviceList#remove()
+     */
+    DeviceList.prototype.forget = DeviceList.prototype.remove;
 
     /**
      * Start auto-updating the device list -- watch for newly connected
@@ -103,20 +130,28 @@
                 return;
             }
             dd.added.forEach(function (device) {
-                $rootScope.$broadcast('device.connect', device.id);
-                connectFn(device);
-            });
+                $rootScope.$broadcast(this.EVENT_CONNECT, device.id);
+                this._connect(device);
+            }.bind(this));
             dd.removed.forEach(function (device) {
-                $rootScope.$broadcast('device.disconnect', device.id);
-                disconnectFn(device);
-            });
-        });
+                $rootScope.$broadcast(this.EVENT_DISCONNECT, device.id);
+                this._disconnect(device);
+            }.bind(this));
+        }.bind(this));
 
         return tick;
     };
 
+    DeviceList.prototype.pauseWatch = function () {
+        this._watchPaused = true;
+    };
+
+    DeviceList.prototype.resumeWatch = function () {
+        this._watchPaused = false;
+    };
+
     /**
-     * Maps a promise notifications with connected device descriptors
+     * Maps a promise notifications with connected device descriptors.
      *
      * Expects a Promise as an argument and returns a new Promise.  Each time
      * passed Promise is fulfilled, the returned Promise is fulfilled aswell
@@ -132,7 +167,7 @@
      */
     DeviceList.prototype._progressWithConnected = function (pr) {
         return pr.then(null, null, function () { // ignores the value
-            if (!enumeratePaused) {
+            if (!this._watchPaused) {
                 return trezor.devices();
             }
         });
@@ -168,7 +203,7 @@
             tmp = prev;
             prev = curr;
             return this._computeDescriptorDelta(tmp, curr);
-        });
+        }.bind(this));
     };
 
     /**
@@ -180,9 +215,9 @@
      *
      * @param {Array} xs  Old list of device descriptors
      * @param {Array} ys  New list of device descriptors
-     * @return {Object}  Difference in format {added: Array, removed: Array}
+     * @return {Object}   Difference in format {added: Array, removed: Array}
      */
-    DeviceList.prototype._computeDescriptorDelta(xs, ys) {
+    DeviceList.prototype._computeDescriptorDelta = function (xs, ys) {
         return {
             added: _.filter(ys, function (y) {
                 return !_.find(xs, { id: y.id });
@@ -193,270 +228,120 @@
         };
     };
 
-    // marks the device of the given descriptor as connected and starting the
-    // correct workflow
-    function _connect(desc) {
-      var dev;
+    /**
+     * Marks the device of the passed descriptor as connected and calls the
+     * connect and initialize hooks.
+     *
+     * @param {Object} desc  Device descriptor in format
+     *                       {id: String, path: String}
+     */
+    DeviceList.prototype._connect = function (desc) {
+        var dev = this._get(desc) || this._create(desc);
 
-      if (desc.id) {
-        dev = _.find(self.devices, { id: desc.id });
+        this._add(dev);
+
+        dev.withLoading(function () {
+            dev.connect(desc);
+
+            $q.fcall(connectHook);
+
+            return dev.initializeDevice()
+                .then(
+                    function (features) {
+                        return {device: dev, features: features};
+                    },
+                    function () {
+                        dev.disconnect();
+                    }
+                )
+                .then(this._initHook);
+        });
+    };
+
+    /**
+     * Register connect hook
+     *
+     * Note that it is not possible to reference the hook once it was
+     * registered, therefore there is no way to unregister the hook.
+     *
+     * @param {Function} fn  Hook function.  The function is passed 2 args.:
+     *                       - {TrezorDevice} device  Device object
+     *                       - {Object} features      Device features
+     *                       If the hook throws Error, than subsequent
+     *                       connect hooks will not be called.
+     */
+    DeviceList.prototype.registerConnectHook = function (fn) {
+        this._connectHook.then(function (params) {
+            fn(params.device, params.features);
+            return params;
+        });
+    };
+
+    /**
+     * Register initialize hook
+     *
+     * Note that it is not possible to reference the hook once it was
+     * registered, therefore there is no way to unregister the hook.
+     *
+     * @param {Function} fn  Hook function.  The function is passed a
+     *                       single argument: the TrezorDevice object.
+     *                       If the hook throws Error, than subsequent
+     *                       initialize hooks will not be called.
+     */
+    DeviceList.prototype.registerInitHook = function (fn) {
+        this._initHook.then(function (dev) {
+            fn(dev);
+            return dev;
+        });
+    };
+
+    /**
+     * Register disconnect hook
+     *
+     * Note that it is not possible to reference the hook once it was
+     * registered, therefore there is no way to unregister the hook.
+     *
+     * @param {Function} fn  Hook function.  The function is passed a
+     *                       single argument: the TrezorDevice object.
+     *                       If the hook throws Error, than subsequent
+     *                       disconnect hooks will not be called.
+     */
+    DeviceList.prototype.registerDisconnectHook = function (fn) {
+        this._disconnectHook.then(function (dev) {
+            fn(dev);
+            return dev;
+        });
+    };
+
+    /**
+     * Create new device from passed descriptor.
+     *
+     * @param {Object} desc    Device descriptor in format
+     *                         {id: String, path: String}
+     * @return {TrezorDevice}  Created device
+     */
+    DeviceList.prototype._create = function (desc) {
+        return new TrezorDevice(desc.id || desc.path);
+    };
+
+    /**
+     * Marks a device of the passed descriptor as disconnected.
+     *
+     * @param {String} desc  Device descriptor
+     */
+    DeviceList.prototype._disconnect = function (desc) {
+        var dev = this.get(desc.id);
         if (!dev) {
-          dev = new TrezorDevice(desc.id);
-          self.devices.push(dev);
-        }
-      } else
-        dev = new TrezorDevice(desc.path);
-
-      dev.withLoading(function () {
-        dev.connect(desc);
-        setupCallbacks(dev);
-        resetOutdatedFirmwareBar(dev);
-        return dev.initializeDevice().then(
-          function (features) {
-            navigateTo(dev);
-            return features.bootloader_mode ?
-              bootloaderWorkflow(dev) :
-              normalWorkflow(dev);
-          },
-          function () {
-            dev.disconnect();
-          }
-        );
-      });
-    }
-
-    // marks a device of the given descriptor as disconnected
-    function _disconnect(desc) {
-      var dev;
-
-      if (desc.id) {
-        dev = _.find(self.devices, { id: desc.id });
-        if (dev)
-          dev.disconnect();
-        resetOutdatedFirmwareBar(desc);
-      }
-    }
-
-    //
-    // normal workflow
-    //
-
-    function navigateTo(dev) {
-      var path = '/device/' + dev.id;
-
-      if ($location.path().indexOf(path) !== 0)
-        $location.path(path);
-    }
-
-    function normalWorkflow(dev) {
-      return firmwareService.check(dev.features)
-        .then(function (firmware) {
-          if (!firmware)
             return;
-          return outdatedFirmware(
-            firmware,
-            firmwareService.get(dev.features),
-            dev
-          );
-        })
-        .then(function () { return dev.initializeAccounts(); })
-        .then(function () {
-          navigateTo(dev);
-        });
-    }
-
-    function setupCallbacks(dev) {
-      setupEnumerationPausing(dev);
-      setupEventForwarding(dev);
-    }
-
-    function setupEnumerationPausing(dev) {
-      dev.on('send', function () { enumeratePaused = true; });
-      dev.on('error', function () { enumeratePaused = false; });
-      dev.on('receive', function () { enumeratePaused = false; });
-    }
-
-    function setupEventForwarding(dev) {
-      ['pin', 'passphrase', 'button', 'word', 'send', 'error', 'receive']
-        .forEach(function (type) {
-          forwardEventsOfType($rootScope, dev, type);
-        });
-    }
-
-    function forwardEventsOfType(scope, dev, type) {
-      dev.on(type, function () {
-        var args = [].slice.call(arguments);
-        args.unshift(dev);
-        args.unshift('device.' + type);
-        scope.$broadcast.apply(scope, args);
-      });
-    }
-
-    function outdatedFirmware(firmware, version, dev) {
-      if (firmware.required)
-        return outdatedFirmwareModal(firmware, version);
-      else
-        return outdatedFirmwareBar(firmware, version, dev);
-    }
-
-    function outdatedFirmwareBar(firmware, version, dev) {
-      $rootScope.optionalFirmware = {
-        device: dev,
-        firmware: firmware,
-        version: version,
-        update: function () {
-          outdatedFirmwareModal(firmware, version);
-        }
-      };
-    }
-
-    function resetOutdatedFirmwareBar(dev) {
-      if ($rootScope.optionalFirmware &&
-          $rootScope.optionalFirmware.device.id === dev.id) {
-        delete $rootScope.optionalFirmware;
-      }
-    }
-
-    function outdatedFirmwareModal(firmware, version) {
-      var scope, modal;
-
-      scope = angular.extend($rootScope.$new(), {
-        state: 'initial',
-        firmware: firmware,
-        version: version,
-        device: null,
-        update: function () {
-          updateFirmware(scope, firmware);
-        }
-      });
-
-      modal = $modal.open({
-        templateUrl: 'views/modal/firmware.html',
-        backdrop: 'static',
-        keyboard: false,
-        scope: scope
-      });
-
-      modal.opened.then(function () {
-        connectFn = myConnect;
-        disconnectFn = myDisconnect;
-      });
-      modal.result.finally(function () {
-        connectFn = connect;
-        disconnectFn = disconnect;
-      });
-
-      return modal.result;
-
-      function myConnect(desc) {
-        var dev = new TrezorDevice(desc.path);
-
-        dev.connect(desc);
-        setupCallbacks(dev);
-        dev.initializeDevice().then(
-          function (features) {
-            scope.state = features.bootloader_mode ?
-              'device-bootloader' :
-              'device-normal';
-            scope.device = dev;
-          },
-          function () { dev.disconnect(); }
-        );
-      }
-
-      function myDisconnect(desc) {
-        if (!scope.device || scope.device.id !== desc.path) {
-          disconnect(desc);
-          return;
-        }
-        scope.device.disconnect();
-        scope.device = null;
-
-        if (scope.state === 'update-success' || scope.state === 'update-error') {
-          modal.close();
-          return;
-        }
-        scope.state = 'initial';
-      }
-    }
-
-    //
-    // booloader workflow
-    //
-
-    function bootloaderWorkflow(dev) {
-      return firmwareService.latest().then(function (firmware) {
-        return candidateFirmware(firmware, dev);
-      });
-    }
-
-    function candidateFirmware(firmware, dev) {
-      var scope, modal;
-
-      scope = angular.extend($rootScope.$new(), {
-        state: 'device-bootloader',
-        firmware: firmware,
-        device: dev,
-        update: function () {
-          updateFirmware(scope, firmware);
-        }
-      });
-
-      modal = $modal.open({
-        templateUrl: 'views/modal/firmware.html',
-        backdrop: 'static',
-        keyboard: false,
-        scope: scope
-      });
-
-      modal.opened.then(function () { disconnectFn = myDisconnect; });
-      modal.result.finally(function () { disconnectFn = disconnect; });
-
-      return modal.result;
-
-      function myDisconnect(desc) {
-        if (desc && desc.path !== dev.id) {
-          disconnect(desc);
-          return;
         }
         dev.disconnect();
-        modal.close();
-      }
-    }
-
-    //
-    // utils
-    //
-
-    function updateFirmware(scope, firmware) {
-      var deregister;
-
-      scope.firmware = firmware;
-      scope.state = 'update-downloading';
-
-      firmwareService.download(firmware)
-        .then(function (data) {
-          deregister = $rootScope.$on('device.button', promptButton);
-          scope.state = 'update-flashing';
-          return scope.device.flash(data);
-        })
-        .then(
-          function () {
-            scope.state = 'update-success';
-            deregister();
-          },
-          function (err) {
-            scope.state = 'update-error';
-            scope.error = err.message;
-            deregister();
-          }
-        );
-
-      function promptButton(event, dev, code) {
-        if (code === 'ButtonRequest_FirmwareCheck')
-          scope.state = 'update-check';
-      }
-    }
+        return $q.fcall(
+                function () {
+                    return dev;
+                }
+            )
+            .then(this._disconnectHook);
+    };
 
     DeviceList.prototype.isForgetInProgress = function () {
         return this._forgetInProgress === true;
@@ -476,4 +361,4 @@
 
     return DeviceList;
 
-}(angular, utils));
+}(_, $q, config, utils, trezor, TrezorDevice, DeviceStorage, $rootScope));
