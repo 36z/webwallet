@@ -346,7 +346,7 @@ angular.module('webwalletApp')
 
     // returns a promise that gets notified every n msec
     function tick(n) {
-      return $interval(null, n);
+      return $interval(null, n, 0, false);
     }
 
     // keeps calling fn while the returned promise is being rejected

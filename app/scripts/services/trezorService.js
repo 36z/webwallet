@@ -148,15 +148,17 @@ angular.module('webwalletApp')
 
       // handle added/removed devices
       delta.then(null, null, function (dd) {
-        if (!dd)
+        if (!dd || (!dd.added.length && !dd.removed.length))
           return;
-        dd.added.forEach(function (device) {
-          $rootScope.$broadcast('device.connect', device.id);
-          connectFn(device);
-        });
-        dd.removed.forEach(function (device) {
-          $rootScope.$broadcast('device.disconnect', device.id);
-          disconnectFn(device);
+        $rootScope.$apply(function () {
+          dd.added.forEach(function (device) {
+            $rootScope.$broadcast('device.connect', device.id);
+            connectFn(device);
+          });
+          dd.removed.forEach(function (device) {
+            $rootScope.$broadcast('device.disconnect', device.id);
+            disconnectFn(device);
+          });
         });
       });
 

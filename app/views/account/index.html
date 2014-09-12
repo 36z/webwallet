@@ -26,7 +26,7 @@
         </thead>
         <tbody>
           <tr class="txlist-tx"
-              ng-repeat="tx in account.transactions">
+              ng-repeat="tx in account.transactions track by tx.hash">
             <td class="txlist-date"
                 ng-if="tx.block">
               {{tx.timestamp | date:'yyyy-MM-dd'}}
